@@ -1,54 +1,59 @@
-import Insta from "@ber4tbey/insta.js";
-import system from "./config/system.js";
-import { containsAbuse, addWarning } from "./features/abuse.js";
-import { pickWelcome } from "./features/welcome.js";
-import { generateReply } from "./features/replies.js";
-import { simulateTypingAndDelay } from "./features/typing.js";
-import { handleCommand } from "./features/commands.js";
+const { IgApiClient } = require('instagram-private-api');
+const ig = new IgApiClient();
+const axios = require("axios");
 
-const client = new Insta.Client();
+// ---------- SESSION LOGIN ----------
+async function loginWithSession() {
+    ig.state.generateDevice(process.env.IG_USERNAME);
 
-client.on("connected", () => {
-  console.log(`${system.BOT_NAME} is online and ruling the chat 👑`);
-});
+    await ig.state.deserialize({
+        cookies: {
+            'sessionid': process.env.IG_SESSIONID
+        }
+    });
 
-client.on("messageCreate", async (message) => {
-  try {
-    if (message.author.id === client.user.id) return;
-    try { message.markSeen(); } catch {}
+    console.log("Isabella 🕊️ logged in using SESSION ID! 👑");
+}
 
-    if (await handleCommand(message)) return;
+// ---------- AI RESPONSE ----------
+async function getAIResponse(prompt) {
+    const result = await axios.post(
+        "https://api.openai.com/v1/chat/completions",
+        {
+            model: "gpt-4o-mini",
+            messages: [{ role: "user", content: prompt }]
+        },
+        {
+            headers: {
+                "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+                "Content-Type": "application/json"
+            }
+        }
+    );
 
-    if (message.type === "user_joined"){
-      const n = message.author.username;
-      return message.chat.sendMessage(pickWelcome(n));
-    }
+    return result.data.choices[0].message.content;
+}
 
-    if (containsAbuse(message.content)){
-      const w = await addWarning(String(message.author.id));
-      if (w >= system.WARN_LIMIT){
-        return message.chat.sendMessage(
-          `Enough darling 😌 You've reached ${w} warnings.`
-        );
-      }
-      return message.chat.sendMessage(
-        `Mind your language babe 😘 (warning ${w}/3)`
-      );
-    }
+// ---------- LISTEN FOR MESSAGES ----------
+async function startBot() {
+    await loginWithSession();
 
-    await simulateTypingAndDelay();
+    const inbox = ig.feed.directInbox();
+    console.log("Isabella is now watching chats… 👑");
 
-    const txt = (message.content || "").toLowerCase().trim();
-    if (txt === "hi" || txt === "hello"){
-      return message.chat.sendMessage(`Hey love 💗 I'm ${system.BOT_NAME}`);
-    }
+    setInterval(async () => {
+        const threads = await inbox.items();
 
-    const reply = await generateReply(message.content);
-    await message.chat.sendMessage(reply);
+        for (let thread of threads) {
+            const lastMsg = thread.items[0];
+            if (!lastMsg) continue;
 
-  } catch (err){
-    console.error("Error:", err);
-  }
-});
+            const text = lastMsg.text || "";
+            const aiReply = await getAIResponse(text);
 
-client.login(process.env.IG_USERNAME, process.env.IG_PASSWORD);
+            await ig.entity.directThread(thread.thread_id).broadcastText(aiReply);
+        }
+    }, 3000);
+}
+
+startBot();
